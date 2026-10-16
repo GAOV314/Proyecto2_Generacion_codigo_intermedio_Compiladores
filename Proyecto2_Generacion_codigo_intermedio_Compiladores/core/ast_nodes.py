@@ -1,5 +1,6 @@
 """Nodos de AST para el subconjunto del lenguaje que cubre la parte de
-Linar: clases, objetos (new/this/atributos/métodos/herencia) y listas.
+Linar (clases, objetos, herencia, listas) y la parte de Gadiel
+(expresiones con precedencia, control de flujo y funciones).
 """
 from __future__ import annotations
 
@@ -53,6 +54,7 @@ class VarDecl(Stmt):
     name: str
     type_name: str | None
     initializer: "Expr | None"
+    is_const: bool = False
 
 
 @dataclass
@@ -74,6 +76,65 @@ class PrintStmt(Stmt):
 @dataclass
 class ExprStmt(Stmt):
     expr: "Expr"
+
+
+# ---- Control de flujo (parte de Gadiel) ------------------------------------
+
+@dataclass
+class IfStmt(Stmt):
+    cond: "Expr"
+    then_body: list["Stmt"]
+    else_body: "list[Stmt] | None"
+
+
+@dataclass
+class WhileStmt(Stmt):
+    cond: "Expr"
+    body: list["Stmt"]
+
+
+@dataclass
+class DoWhileStmt(Stmt):
+    body: list["Stmt"]
+    cond: "Expr"
+
+
+@dataclass
+class ForStmt(Stmt):
+    init: "Stmt | None"
+    cond: "Expr | None"
+    update: "Stmt | None"
+    body: list["Stmt"]
+
+
+@dataclass
+class SwitchStmt(Stmt):
+    subject: "Expr"
+    cases: list[tuple["Expr", list["Stmt"]]]
+    default_body: "list[Stmt] | None"
+
+
+@dataclass
+class BreakStmt(Stmt):
+    pass
+
+
+@dataclass
+class ContinueStmt(Stmt):
+    pass
+
+
+# ---- Funciones (parte de Gadiel) -------------------------------------------
+# FunctionDecl es un Stmt (no un miembro de Program aparte) para que pueda
+# aparecer en cualquier lista de sentencias: nivel de programa, cuerpo de
+# otra función (función anidada) o incluso dentro de un bloque if/while.
+
+
+@dataclass
+class FunctionDecl(Stmt):
+    name: str
+    params: list[tuple[str, str | None]]
+    body: list["Stmt"]
 
 
 # ---- Expresiones ----------------------------------------------------------
@@ -132,3 +193,27 @@ class BinaryOp(Expr):
     op: str
     left: Expr
     right: Expr
+
+
+@dataclass
+class UnaryOp(Expr):
+    op: str  # "-" | "!"
+    operand: Expr
+
+
+@dataclass
+class LogicalOp(Expr):
+    """Operadores lógicos de cortocircuito ('&&' / '||'), separados de
+    BinaryOp para que el generador de código evalúe el operando derecho
+    solo cuando sea necesario."""
+    op: str
+    left: Expr
+    right: Expr
+
+
+@dataclass
+class CallExpr(Expr):
+    """Llamada a una función libre o anidada por nombre (no un método de
+    objeto, eso es MethodCall)."""
+    name: str
+    args: list[Expr]

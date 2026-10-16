@@ -1,0 +1,12 @@
+let a = 2 + 3 * 4;
+let b = (2 + 3) * 4;
+let c = true && false || true;
+let d = !false;
+let e = -5 + 1;
+const pi = 3;
+print(a);
+print(b);
+print(c);
+print(d);
+print(e);
+print(pi);

@@ -1,4 +1,5 @@
-"""Driver mínimo: fuente .cps -> TAC, para la parte de clases/objetos/listas.
+"""Driver y CLI: fuente .cps -> TAC. Integra el front-end completo (clases,
+objetos, listas, expresiones, control de flujo y funciones).
 
 Uso: python driver.py archivo.cps
 """

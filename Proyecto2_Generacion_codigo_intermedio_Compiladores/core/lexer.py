@@ -1,6 +1,6 @@
-"""Lexer mínimo para el subconjunto de .cps que necesita la parte de Linar
-(clases, objetos, listas). No cubre control de flujo ni tipos completos:
-eso corresponde a otros integrantes del equipo.
+"""Lexer para el subconjunto de .cps que necesitan la parte de Linar
+(clases, objetos, listas) y la parte de Gadiel (expresiones, control de
+flujo y funciones). La tokenización es compartida por todo el front-end.
 """
 from __future__ import annotations
 
@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from core.errors import LexError
 
 KEYWORDS = {
-    "class", "extends", "new", "this", "let", "function",
+    "class", "extends", "new", "this", "let", "const", "function",
     "return", "print", "true", "false", "null",
+    "if", "else", "while", "do", "for", "switch", "case", "default",
+    "break", "continue",
 }
 
 TOKEN_SPEC = [
@@ -25,7 +27,9 @@ TOKEN_SPEC = [
     ("NEQ", r"!="),
     ("LE", r"<="),
     ("GE", r">="),
-    ("OP", r"[+\-*/=<>.,;:(){}\[\]]"),
+    ("ANDAND", r"&&"),
+    ("OROR", r"\|\|"),
+    ("OP", r"[+\-*/=<>!.,;:(){}\[\]]"),
 ]
 
 MASTER_RE = re.compile("|".join(f"(?P<{name}>{pattern})" for name, pattern in TOKEN_SPEC))
