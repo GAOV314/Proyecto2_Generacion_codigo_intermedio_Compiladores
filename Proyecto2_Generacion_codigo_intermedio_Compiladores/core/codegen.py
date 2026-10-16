@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from core import ast_nodes as ast
 from core.errors import SemanticError
-from core.symbols import SymbolTable
+from core.symbols import ActivationRecord, ClosureAccess, Environment, SymbolTable
 from core.tac import TACFunction, TACProgram, TempManager
 
 # Sentinel de tipo estático para listas. No puede chocar con ningún nombre de
@@ -37,7 +37,7 @@ LIST_TYPE = "<list>"
 
 
 class Scope:
-    def __init__(self, parent: "Scope | None" = None) -> None:
+    def __init__(self, parent: "Scope | None" = None, env: "Environment | None" = None) -> None:
         self.vars: dict[str, str | None] = {}
         self.declared: set[str] = set()
         self.consts: set[str] = set()
@@ -45,10 +45,17 @@ class Scope:
         # nombre corto -> (nombre_calificado_en_TAC, aridad).
         self.functions: dict[str, tuple[str, int]] = {}
         self.parent = parent
+        # Entorno (tabla de símbolos/registro de activación, parte de
+        # Wachuuu15) asociado a este ámbito. Un ámbito de bloque (if/while/
+        # for/switch) hereda el mismo entorno que su padre (comparten AR);
+        # solo los ámbitos de función reciben uno explícito nuevo.
+        self.env: "Environment | None" = env if env is not None else (parent.env if parent is not None else None)
 
-    def declare(self, name: str, type_: str | None) -> None:
+    def declare(self, name: str, type_: str | None, kind: str = "local") -> None:
         self.declared.add(name)
         self.vars[name] = type_
+        if self.env is not None:
+            self.env.declare(name, type_, kind=kind)
 
     def is_declared(self, name: str) -> bool:
         if name in self.declared:
@@ -95,16 +102,53 @@ class CodeGenerator:
         # switch se refiere al bucle que lo contiene, no al switch).
         self.break_stack: list[str] = []
         self.continue_stack: list[str] = []
+        # Entorno (registro de activación) de la función que se está
+        # generando en este momento; lo usan _new_temp y la resolución de
+        # variables libres de closures. Ver core/symbols.py.
+        self.current_env: Environment | None = None
 
     def new_label(self) -> str:
         self._label_counter += 1
         return f"L{self._label_counter}"
 
+    def _new_temp(self, type_name: str | None = None) -> str:
+        name = self.temps.new_temp()
+        if self.current_env is not None:
+            self.current_env.declare(name, type_name, kind="temp")
+        return name
+
+    def _track_closure_access(self, name: str, line: int) -> None:
+        """Si `name` se resuelve fuera del AR actual (hops > 0), registra el
+        acceso para el reporte de la tabla de símbolos: es exactamente el
+        caso de una función anidada leyendo una variable libre de la función
+        que la contiene (closure)."""
+        if self.current_env is None:
+            return
+        resolved = self.current_env.resolve(name)
+        if resolved is None:
+            return
+        hops, defining_ar, slot = resolved
+        if hops == 0:
+            return
+        self.symtab.register_closure_access(
+            ClosureAccess(
+                variable=name,
+                used_in=self.current_env.ar.name,
+                defined_in=defining_ar.name,
+                access_link_hops=hops,
+                offset=slot.offset,
+                line=line,
+            )
+        )
+
     def generate(self, program: ast.Program) -> TACProgram:
         self.symtab.register_classes(program.classes)
         for class_decl in program.classes:
             self._gen_class(class_decl)
-        scope = Scope()
+        main_ar = ActivationRecord("main", parent=None, depth=0)
+        self.symtab.register_activation_record(main_ar)
+        self.current_env = Environment(main_ar)
+        scope = Scope(env=self.current_env)
         self._gen_stmt_list(program.statements, self.program.main, scope, current_class=None, qualified_prefix="")
         return self.program
 
@@ -114,10 +158,17 @@ class CodeGenerator:
         for method in decl.methods:
             qualified_name = f"{decl.name}.{method.name}"
             func = self.program.new_function(qualified_name)
-            scope = Scope()
-            scope.declare("this", decl.name)
+            # Un método no está anidado léxicamente dentro de otra función:
+            # su registro de activación no tiene padre para efectos de
+            # enlace de acceso (el objeto se alcanza vía 'this', ya
+            # modelado como un parámetro más).
+            method_ar = ActivationRecord(qualified_name, parent=None, depth=0)
+            self.symtab.register_activation_record(method_ar)
+            self.current_env = Environment(method_ar)
+            scope = Scope(env=self.current_env)
+            scope.declare("this", decl.name, kind="param")
             for pname, ptype in method.params:
-                scope.declare(pname, ptype)
+                scope.declare(pname, ptype, kind="param")
             self._gen_stmt_list(
                 method.body, func, scope, current_class=info, qualified_prefix=f"{qualified_name}."
             )
@@ -153,10 +204,17 @@ class CodeGenerator:
     def _gen_function_decl(self, stmt: ast.FunctionDecl, parent_scope: Scope, qualified_prefix: str) -> None:
         qualified_name = f"{qualified_prefix}{stmt.name}"
         func = self.program.new_function(qualified_name)
-        func_scope = Scope(parent=parent_scope)
+        # El AR nuevo encadena, como padre léxico (enlace de acceso), el AR
+        # de la función que la contiene: así se resuelven las variables
+        # libres de closures (ver Environment.resolve en core/symbols.py).
+        outer_env = self.current_env
+        self.current_env = outer_env.new_function(qualified_name)
+        self.symtab.register_activation_record(self.current_env.ar)
+        func_scope = Scope(parent=parent_scope, env=self.current_env)
         for pname, ptype in stmt.params:
-            func_scope.declare(pname, ptype)
+            func_scope.declare(pname, ptype, kind="param")
         self._gen_stmt_list(stmt.body, func, func_scope, current_class=None, qualified_prefix=f"{qualified_name}.")
+        self.current_env = outer_env
 
     # -- sentencias ---------------------------------------------------------
     def _gen_stmt(
@@ -284,7 +342,7 @@ class CodeGenerator:
 
         for (value_expr, _body), label in zip(stmt.cases, case_labels):
             value_place, _ = self._gen_expr(value_expr, func, scope, current_class)
-            cmp_temp = self.temps.new_temp()
+            cmp_temp = self._new_temp()
             func.emit(f"{cmp_temp} = {subject_place} == {value_place}")
             func.emit(f"if {cmp_temp} goto {label}")
         func.emit(f"goto {default_label if default_label else end_label}")
@@ -349,6 +407,7 @@ class CodeGenerator:
         if isinstance(expr, ast.Identifier):
             if not scope.is_declared(expr.name):
                 raise SemanticError(f"Variable '{expr.name}' no declarada", expr.line)
+            self._track_closure_access(expr.name, expr.line)
             return expr.name, scope.lookup_type(expr.name)
 
         if isinstance(expr, ast.ThisExpr):
@@ -362,7 +421,7 @@ class CodeGenerator:
         if isinstance(expr, ast.AttrAccess):
             obj_place, obj_type = self._gen_expr(expr.obj, func, scope, current_class)
             self._check_attr(obj_type, expr.attr, expr.line)
-            temp = self.temps.new_temp()
+            temp = self._new_temp()
             func.emit(f"{temp} = {obj_place}.{expr.attr}")
             return temp, self._field_type(obj_type, expr.attr)
 
@@ -376,20 +435,20 @@ class CodeGenerator:
             obj_place, obj_type = self._gen_expr(expr.obj, func, scope, current_class)
             self._check_indexable(obj_type, expr.line)
             idx_place, _ = self._gen_expr(expr.index, func, scope, current_class)
-            temp = self.temps.new_temp()
+            temp = self._new_temp()
             func.emit(f"{temp} = {obj_place}[{idx_place}]")
             return temp, None
 
         if isinstance(expr, ast.BinaryOp):
             left_place, _ = self._gen_expr(expr.left, func, scope, current_class)
             right_place, _ = self._gen_expr(expr.right, func, scope, current_class)
-            temp = self.temps.new_temp()
+            temp = self._new_temp()
             func.emit(f"{temp} = {left_place} {expr.op} {right_place}")
             return temp, None
 
         if isinstance(expr, ast.UnaryOp):
             operand_place, _ = self._gen_expr(expr.operand, func, scope, current_class)
-            temp = self.temps.new_temp()
+            temp = self._new_temp()
             func.emit(f"{temp} = {expr.op} {operand_place}")
             return temp, None
 
@@ -406,7 +465,7 @@ class CodeGenerator:
         # evalúa si el izquierdo es verdadero (y el de '||' solo si el
         # izquierdo es falso), como en la mayoría de lenguajes imperativos.
         left_place, _ = self._gen_expr(expr.left, func, scope, current_class)
-        result = self.temps.new_temp()
+        result = self._new_temp()
         short_circuit_label = self.new_label()
         end_label = self.new_label()
         if expr.op == "&&":
@@ -439,13 +498,13 @@ class CodeGenerator:
         arg_places = [self._gen_expr(a, func, scope, current_class)[0] for a in expr.args]
         for place in arg_places:
             func.emit(f"param {place}")
-        temp = self.temps.new_temp()
+        temp = self._new_temp()
         func.emit(f"{temp} = call {qualified_name}, {len(arg_places)}")
         return temp, None
 
     def _gen_new(self, expr: ast.NewExpr, func: TACFunction, scope: Scope, current_class):
         class_info = self.symtab.get_class(expr.class_name, expr.line)
-        temp = self.temps.new_temp()
+        temp = self._new_temp()
         func.emit(f"{temp} = new {expr.class_name}")
 
         arg_places = [self._gen_expr(a, func, scope, current_class)[0] for a in expr.args]
@@ -502,13 +561,13 @@ class CodeGenerator:
         func.emit(f"param {obj_place}")
         for place in arg_places:
             func.emit(f"param {place}")
-        temp = self.temps.new_temp()
+        temp = self._new_temp()
         func.emit(f"{temp} = call {call_target}, {len(arg_places) + 1}")
         return temp, None
 
     def _gen_list_literal(self, expr: ast.ListLiteral, func: TACFunction, scope: Scope, current_class):
         elem_places = [self._gen_expr(e, func, scope, current_class)[0] for e in expr.elements]
-        temp = self.temps.new_temp()
+        temp = self._new_temp()
         func.emit(f"{temp} = newlist {len(elem_places)}")
         for i, place in enumerate(elem_places):
             func.emit(f"{temp}[{i}] = {place}")
