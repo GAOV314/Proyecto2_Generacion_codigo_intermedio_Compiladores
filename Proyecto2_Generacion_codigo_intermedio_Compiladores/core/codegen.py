@@ -106,6 +106,9 @@ class CodeGenerator:
         # generando en este momento; lo usan _new_temp y la resolución de
         # variables libres de closures. Ver core/symbols.py.
         self.current_env: Environment | None = None
+        # Temporales acuñados y aún no liberados (parte de Cindy: reciclaje
+        # de temporales). Ver _gen_stmt.
+        self._live_temps: set[str] = set()
 
     def new_label(self) -> str:
         self._label_counter += 1
@@ -113,9 +116,15 @@ class CodeGenerator:
 
     def _new_temp(self, type_name: str | None = None) -> str:
         name = self.temps.new_temp()
+        self._live_temps.add(name)
         if self.current_env is not None:
             self.current_env.declare(name, type_name, kind="temp")
         return name
+
+    def _release_temp(self, name: str) -> None:
+        if name in self._live_temps:
+            self._live_temps.discard(name)
+            self.temps.free_temp(name)
 
     def _track_closure_access(self, name: str, line: int) -> None:
         """Si `name` se resuelve fuera del AR actual (hops > 0), registra el
@@ -218,6 +227,29 @@ class CodeGenerator:
 
     # -- sentencias ---------------------------------------------------------
     def _gen_stmt(
+        self, stmt: ast.Stmt, func: TACFunction, scope: Scope, current_class, qualified_prefix: str = ""
+    ) -> None:
+        """Genera `stmt` y, al terminar, recicla (libera) todo temporal que
+        esta sentencia haya acuñado y que siga vivo al final de ella: ningún
+        temporal creado al evaluar una sentencia se referencia jamás desde
+        una sentencia hermana posterior, así que su vida útil nunca cruza
+        esta frontera. Es el algoritmo de reciclaje de temporales (parte de
+        Cindy; ver docs/Lenguaje_Intermedio_TAC.md).
+
+        Se compara contra una foto de `_live_temps` tomada antes de generar
+        la sentencia, en vez de asumir que "todo lo creado aquí se libera
+        aquí", porque `stmt` puede contener sentencias anidadas (un bloque
+        if/while/for, o el init/update de un for) que ya se generan con esta
+        misma función y ya liberan sus propios temporales; esto evita
+        liberar dos veces el mismo nombre.
+        """
+        before = set(self._live_temps)
+        self._dispatch_stmt(stmt, func, scope, current_class, qualified_prefix)
+        leaked = self._live_temps - before
+        for name in sorted(leaked, key=lambda n: int(n[1:])):
+            self._release_temp(name)
+
+    def _dispatch_stmt(
         self, stmt: ast.Stmt, func: TACFunction, scope: Scope, current_class, qualified_prefix: str = ""
     ) -> None:
         if isinstance(stmt, ast.VarDecl):

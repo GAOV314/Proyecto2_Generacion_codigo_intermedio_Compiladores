@@ -28,7 +28,8 @@ def test_comparacion_emite_binaryop():
 def test_unario_negacion_logica_y_aritmetica():
     tac = compile_source("let d = !false;\nlet e = -5;")
     assert "t1 = ! false" in tac
-    assert "t2 = - 5" in tac
+    # t1 se libera tras 'd = t1' y se recicla para la siguiente sentencia.
+    assert "t1 = - 5" in tac
 
 
 def test_and_logico_con_cortocircuito():

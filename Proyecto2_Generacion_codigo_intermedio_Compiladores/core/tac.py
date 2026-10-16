@@ -21,22 +21,42 @@ Formato de instrucciones usado (consistente con lo que describe el reparto):
   ifFalse t goto L1                -> salto si t es falso
   return [t]                      -> retorno (con o sin valor)
 
-Nota de alcance: el diseño final y unificado del lenguaje intermedio (todas
-las instrucciones, convenciones de nombres, reciclaje de temporales) es
-responsabilidad de Cindy. Este módulo implementa un subconjunto consistente
-y documentado, suficiente para generar y probar TAC de clases, listas,
-expresiones, control de flujo y funciones.
+Diseño del lenguaje intermedio y reciclaje de temporales: parte de Cindy.
+Ver docs/Lenguaje_Intermedio_TAC.md para la especificación completa de cada
+instrucción, con ejemplos de traducción y los supuestos considerados.
 """
 from __future__ import annotations
 
 
 class TempManager:
+    """Asigna y recicla nombres de temporales (`t1`, `t2`, ...).
+
+    Algoritmo de reciclaje: el que llama a `new_temp()` eventualmente
+    devuelve el nombre con `free_temp()` cuando ya no lo necesita (ver
+    `CodeGenerator._gen_stmt` en core/codegen.py, que libera automáticamente
+    cada temporal que no sobrevive al final de la sentencia que lo creó).
+    Los nombres liberados se guardan en una pila (`_free`) y `new_temp()`
+    reutiliza el más recientemente liberado antes de acuñar uno nuevo; así
+    el compilador usa la menor cantidad de nombres distintos de temporales
+    posible, en vez de uno nuevo por cada subexpresión del programa.
+    """
+
     def __init__(self) -> None:
         self._counter = 0
+        self._free: list[int] = []
 
     def new_temp(self) -> str:
-        self._counter += 1
-        return f"t{self._counter}"
+        if self._free:
+            index = self._free.pop()
+        else:
+            self._counter += 1
+            index = self._counter
+        return f"t{index}"
+
+    def free_temp(self, name: str) -> None:
+        """Devuelve `name` (debe haber salido de `new_temp()`) al pool para
+        que una llamada posterior a `new_temp()` lo reutilice."""
+        self._free.append(int(name[1:]))
 
 
 class TACFunction:

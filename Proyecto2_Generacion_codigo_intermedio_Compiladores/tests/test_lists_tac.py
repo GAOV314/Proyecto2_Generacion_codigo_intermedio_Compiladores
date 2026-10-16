@@ -17,8 +17,9 @@ def test_creacion_de_lista_emite_newlist_y_asignaciones_indexadas():
 
 def test_lectura_indexada_produce_t_igual_a_a_corchete_i():
     tac = compile_source("let nums = [1, 2, 3];\nlet first = nums[0];")
-    assert "t2 = nums[0]" in tac
-    assert "first = t2" in tac
+    # t1 (usado para 'newlist') se libera tras 'nums = t1' y se recicla aquí.
+    assert "t1 = nums[0]" in tac
+    assert "first = t1" in tac
 
 
 def test_escritura_indexada_produce_a_corchete_i_igual_a_t():
@@ -29,8 +30,9 @@ def test_escritura_indexada_produce_a_corchete_i_igual_a_t():
 def test_patron_leer_y_reescribir_mismo_indice():
     tac = compile_source("let a = [10, 20, 30];\nlet t = a[0];\na[0] = t;")
     lines = [l.strip() for l in tac.splitlines()]
-    assert "t2 = a[0]" in lines
-    assert "t = t2" in lines
+    # t1 (usado para 'newlist') se libera tras 'a = t1' y se recicla aquí.
+    assert "t1 = a[0]" in lines
+    assert "t = t1" in lines
     assert "a[0] = t" in lines
 
 
